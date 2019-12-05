@@ -22,7 +22,7 @@ type TimedCacheItem struct {
 type TimedCacheItemEquivalencyFunc func(key string, current, new interface{}) bool
 
 // defaultTimedCacheEquivalencyFunc will always allow the incoming item to overwrite the existing one.
-func defaultTimedCacheEquivalencyFunc(key string, current, new interface{}) bool {
+func defaultTimedCacheEquivalencyFunc(_ string, _, _ interface{}) bool {
 	return false
 }
 
