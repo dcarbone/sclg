@@ -2,10 +2,30 @@ package sclg
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type TimedCacheEvent int
+
+const (
+	TimedCacheEventStored TimedCacheEvent = iota
+	TimedCacheEventRemoved
+)
+
+func (ev TimedCacheEvent) String() string {
+	switch ev {
+	case TimedCacheEventStored:
+		return "stored"
+	case TimedCacheEventRemoved:
+		return "removed"
+
+	default:
+		return fmt.Sprintf("UKNOWN (%d)", ev)
+	}
+}
 
 // TimedCacheItem represents one entry in a timed cache
 type TimedCacheItem struct {
@@ -17,9 +37,12 @@ type TimedCacheItem struct {
 	cancel  context.CancelFunc
 }
 
-// timedCacheComparator is used when a new cache request is seen where there is already key for that item defined. If
+// TimedCacheItemEquivalencyFunc is used when a new cache request is seen where there is already key for that item defined. If
 // your implementation returns true, it is assumed the two items are equivalent and therefore no update is necessary
 type TimedCacheItemEquivalencyFunc func(key string, current, new interface{}) bool
+
+// TimedCacheEventCallback is called any time a significant event happens to a particular item in the cache
+type TimedCacheEventCallback func(ev TimedCacheEvent, key, message string)
 
 // defaultTimedCacheEquivalencyFunc will always allow the incoming item to overwrite the existing one.
 func defaultTimedCacheEquivalencyFunc(_ string, _, _ interface{}) bool {
@@ -37,6 +60,7 @@ func init() {
 	timedCacheItemPool = sync.Pool{New: func() interface{} { return new(TimedCacheItem) }}
 }
 
+// TimedCacheConfig is used to define a given TimedCache instance
 type TimedCacheConfig struct {
 	// Log [optional]
 	//
@@ -48,6 +72,16 @@ type TimedCacheConfig struct {
 	// Optionally define a comparison func that will be called when determining if an existing cached item should be
 	// overwritten when calling the LoadOrStore methods
 	Comparator TimedCacheItemEquivalencyFunc
+
+	// StoredEventCallback [optional]
+	//
+	// If defined, this will be called each time an entry has been persisted, after persistence has happened
+	StoredEventCallback TimedCacheEventCallback
+
+	// RemovedEventCallback [optional]
+	//
+	// If defined, this will be called each time an entry has been removed from the cache, after it has been removed.
+	RemovedEventCallback TimedCacheEventCallback
 }
 
 // DefaultTimedCacheConfig will return a functional default configuration instance to you
@@ -57,7 +91,8 @@ func DefaultTimedCacheConfig() *TimedCacheConfig {
 	return c
 }
 
-// TimedCacheConfigMutator defines a func structure that may be provided when building a client to modify the provided config
+// TimedCacheConfigMutator defines a func structure that may be provided when building a client to modify the provided
+// config
 type TimedCacheConfigMutator func(*TimedCacheConfig)
 
 // TimedCache represents a specific-purpose cache
@@ -67,6 +102,9 @@ type TimedCache struct {
 	wg    *sync.WaitGroup
 	cmp   TimedCacheItemEquivalencyFunc
 	items map[string]*TimedCacheItem
+
+	sl TimedCacheEventCallback
+	rl TimedCacheEventCallback
 }
 
 // NewTimedCache will return to you a function cache instance
@@ -78,6 +116,9 @@ func NewTimedCache(conf *TimedCacheConfig, mutators ...TimedCacheConfigMutator) 
 	tc.wg = new(sync.WaitGroup)
 	tc.cmp = c.Comparator
 	tc.items = make(map[string]*TimedCacheItem)
+
+	tc.sl = c.StoredEventCallback
+	tc.rl = c.RemovedEventCallback
 
 	return tc
 }
@@ -106,13 +147,21 @@ func (tc *TimedCache) log(f string, v ...interface{}) {
 func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 	// wait for context to expire
 	<-tci.ctx.Done()
-	tc.log("Context for item %q has expired with reason: %s", tci.id, tci.ctx.Err())
+
+	// build message for log and event listener
+	key := tci.key
+	msg := fmt.Sprintf("Context for item %q (%d) has expired with reason: %s", tci.key, tci.id, tci.ctx.Err())
+
+	// tell the world
+	tc.log(msg)
 
 	// lock cache and determine if the item needs to be deleted or if it has already been superseded
 	tc.mu.Lock()
 	if curr, ok := tc.items[tci.key]; ok && curr.id == tci.id {
-		tc.log("Deleting item %q from cache", tci.key)
+		tc.log("Deleting item %q (%d) from cache", tci.key, tci.id)
 		delete(tc.items, tci.key)
+	} else {
+		tc.log("Item %q (%d) has been superseded by %d", tci.key, tci.id, curr.id)
 	}
 	tc.mu.Unlock()
 
@@ -135,6 +184,11 @@ func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 
 	// finally put back in the pool
 	timedCacheItemPool.Put(tci)
+
+	// call listener, if defined
+	if tc.rl != nil {
+		tc.rl(TimedCacheEventRemoved, key, msg)
+	}
 }
 
 func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{}) {
@@ -152,14 +206,24 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{})
 	// increment wait group
 	tc.wg.Add(1)
 
+	// build msg for event
+	var msg string
 	if d, ok := tci.ctx.Deadline(); ok {
-		tc.log("Storing item %q until %s", tci.id, d)
+		msg = fmt.Sprintf("Item %q (%d) has been persisted until %s", key, tci.id, d)
 	} else {
-		tc.log("Storing item %q until death")
+		msg = fmt.Sprintf("Item %q (%d) has been persisted until replaced", key, tci.id)
 	}
 
 	// spin up expiration routine
 	go tc.expireHandler(tci)
+
+	// tell the world
+	tc.log(msg)
+
+	// call listener, if defined
+	if tc.sl != nil {
+		tc.sl(TimedCacheEventStored, key, msg)
+	}
 }
 
 func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
