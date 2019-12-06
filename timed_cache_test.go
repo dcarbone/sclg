@@ -4,33 +4,29 @@ import (
 	"context"
 	"math/rand"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dcarbone/sclg"
 )
 
-type testLogger struct {
-	t *testing.T
-}
+const (
+	defaultMax  = 100
+	defaultMax2 = defaultMax * 2
+)
 
-func (tl *testLogger) Printf(f string, v ...interface{}) {
-	tl.t.Logf(f, v...)
-}
-
-func kvp() (string, int) {
-	v := rand.Intn(100)
+func kvp(max int) (string, int) {
+	v := rand.Intn(max)
 	return strconv.Itoa(v), v
-}
-
-func newTC(t *testing.T, cfg *sclg.TimedCacheConfig) *sclg.TimedCache {
-	return sclg.NewTimedCache(cfg, func(c *sclg.TimedCacheConfig) { c.Log = &testLogger{t} })
 }
 
 func TestTimedCache(t *testing.T) {
 	t.Run("store-load", func(t *testing.T) {
-		tc := newTC(t, nil)
-		k, v := kvp()
+		tc := sclg.NewTimedCache(nil)
+		defer tc.Flush()
+		k, v := kvp(defaultMax)
 		tc.Store(context.Background(), k, v)
 		if lv, ok := tc.Load(k); !ok {
 			t.Logf("Key %q expected to be %d, saw %v", k, v, lv)
@@ -45,7 +41,8 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-empty", func(t *testing.T) {
-		tc := newTC(t, nil)
+		tc := sclg.NewTimedCache(nil)
+		defer tc.Flush()
 		if v, ok := tc.Load("nope"); ok {
 			t.Logf("Key %q shouldn't exist", "nope")
 			t.Fail()
@@ -56,8 +53,9 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-overwrite", func(t *testing.T) {
-		tc := newTC(t, nil)
-		k, v1 := kvp()
+		tc := sclg.NewTimedCache(nil)
+		defer tc.Flush()
+		k, v1 := kvp(defaultMax)
 		v2 := v1 + 1
 		tc.Store(context.Background(), k, v1)
 		tc.Store(context.Background(), k, v2)
@@ -94,9 +92,10 @@ func TestTimedCache(t *testing.T) {
 		cfg.StoredEventCallback = f
 		cfg.RemovedEventCallback = f
 
-		tc := newTC(t, cfg)
-		k, v := kvp()
+		tc := sclg.NewTimedCache(cfg)
+		k, v := kvp(defaultMax)
 		tc.Store(context.Background(), k, v)
+		defer tc.Flush()
 		select {
 		case <-called:
 			if ev != sclg.TimedCacheEventStored {
@@ -127,5 +126,71 @@ func TestTimedCache(t *testing.T) {
 			t.Logf("remove callback was not called")
 			t.FailNow()
 		}
+	})
+
+	t.Run("concurrent-read-write", func(t *testing.T) {
+		rand.Seed(time.Now().UnixNano())
+		var (
+			zero, one, two uint64
+			storeCnt       uint64
+			hitCnt         uint64
+			missCnt        uint64
+			overwrittenCnt uint64
+			reusedCnt      uint64
+
+			routines     = 1000
+			routineLoops = 50
+			wg           = new(sync.WaitGroup)
+		)
+
+		// new empty cache
+		tc := sclg.NewTimedCache(nil, func(c *sclg.TimedCacheConfig) {
+			c.Comparator = func(_ string, current, new interface{}) bool {
+				return rand.Intn(2)%2 == 0
+			}
+		})
+		defer tc.Flush()
+
+		// spin up a few routines
+		for n := 0; n < routines; n++ {
+			wg.Add(1)
+			go func() {
+				var (
+					k      string
+					v      int
+					ok     bool
+					stored bool
+				)
+				for i := 0; i < routineLoops; i++ {
+					k, v = kvp(defaultMax)
+					switch rand.Intn(3) {
+					case 0:
+						tc.Store(context.Background(), k, v)
+						atomic.AddUint64(&zero, 1)
+						atomic.AddUint64(&storeCnt, 1)
+					case 1:
+						atomic.AddUint64(&one, 1)
+						if _, ok = tc.Load(k); !ok {
+							atomic.AddUint64(&missCnt, 1)
+						} else {
+							atomic.AddUint64(&hitCnt, 1)
+						}
+					case 2:
+						atomic.AddUint64(&two, 1)
+						if _, stored = tc.LoadOrStore(context.Background(), k, v); stored {
+							atomic.AddUint64(&overwrittenCnt, 1)
+						} else {
+							atomic.AddUint64(&reusedCnt, 1)
+						}
+					}
+				}
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+
+		t.Logf("zero: %d; one: %d; two: %d", zero, one, two)
+		t.Logf("stored: %d; hits: %d; misses: %d; overwritten: %d; reused %d", storeCnt, hitCnt, missCnt, overwrittenCnt, reusedCnt)
 	})
 }

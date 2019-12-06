@@ -29,6 +29,10 @@ func init() {
 	timedCacheItemPool = sync.Pool{New: func() interface{} { return new(TimedCacheItem) }}
 }
 
+// TimedCacheEvent
+//
+// These are events that represent significant events in the lifecycle of an item within this cache.  More will be
+// added as they are needed
 type TimedCacheEvent int
 
 const (
@@ -36,6 +40,7 @@ const (
 	TimedCacheEventRemoved
 )
 
+// String must return a printable human-understandable descriptor of the event
 func (ev TimedCacheEvent) String() string {
 	switch ev {
 	case TimedCacheEventStored:
