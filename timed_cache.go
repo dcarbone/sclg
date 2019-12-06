@@ -157,11 +157,13 @@ func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 
 	// lock cache and determine if the item needs to be deleted or if it has already been superseded
 	tc.mu.Lock()
-	if curr, ok := tc.items[tci.key]; ok && curr.id == tci.id {
-		tc.log("Deleting item %q (%d) from cache", tci.key, tci.id)
-		delete(tc.items, tci.key)
-	} else {
-		tc.log("Item %q (%d) has been superseded by %d", tci.key, tci.id, curr.id)
+	if curr, ok := tc.items[tci.key]; ok {
+		if curr.id == tci.id {
+			tc.log("Deleting item %q (%d) from cache", tci.key, tci.id)
+			delete(tc.items, tci.key)
+		} else {
+			tc.log("Item %q (%d) has been superseded by %d", tci.key, tci.id, curr.id)
+		}
 	}
 	tc.mu.Unlock()
 

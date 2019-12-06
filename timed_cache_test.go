@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/dcarbone/sclg"
 )
@@ -18,46 +17,51 @@ func (tl *testLogger) Printf(f string, v ...interface{}) {
 	tl.t.Logf(f, v...)
 }
 
+func kvp() (string, int) {
+	v := rand.Intn(100)
+	return strconv.Itoa(v), v
+}
+
 func TestTimedCache(t *testing.T) {
-	// TODO: do better...
-
-	tc := sclg.NewTimedCache(nil)
-
-	t.Run("load-or-store", func(t *testing.T) {
-		t.Parallel()
-		for i := 0; i < 100; i++ {
-			go func(i int) {
-				v := rand.Intn(100)
-				k := strconv.Itoa(v)
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				v2, _ := tc.LoadOrStore(ctx, k, v)
-				if v2i, ok := v2.(int); !ok {
-					t.Logf("Routine %d: Expected LoadOrStore to return int, saw %T", i, v2)
-					t.Fail()
-				} else if v2i != v {
-					t.Logf("Routine %d: Expected LoadOrStore value to return %d, saw %d", i, v, v2i)
-					t.Fail()
-				}
-			}(i)
+	t.Run("store-load", func(t *testing.T) {
+		tc := sclg.NewTimedCache(nil)
+		k, v := kvp()
+		tc.Store(context.Background(), k, v)
+		if lv, ok := tc.Load(k); !ok {
+			t.Logf("Key %q expected to be %d, saw %v", k, v, lv)
+			t.Fail()
+		} else if i, ok := lv.(int); !ok {
+			t.Logf("Key %q value changed from %T (%d) to %T (%v)", k, v, v, lv, lv)
+			t.Fail()
+		} else if i != v {
+			t.Logf("Key %q value changed from %d to %d", k, v, i)
+			t.Fail()
 		}
 	})
 
-	t.Run("load", func(t *testing.T) {
-		t.Parallel()
-		for i := 0; i < 100; i++ {
-			go func(i int) {
-				k := rand.Intn(100)
-				if v, ok := tc.Load(strconv.Itoa(k)); ok {
-					if vi, ok := v.(int); !ok {
-						t.Logf("Routine %d: Expected key %q to be int, saw %T", i, k, v)
-						t.Fail()
-					} else if vi != k {
-						t.Logf("Routine %d: Expected key %q to have value %d, saw %d", i, k, k, vi)
-						t.Fail()
-					}
-				}
-			}(i)
+	t.Run("load-empty", func(t *testing.T) {
+		tc := sclg.NewTimedCache(nil)
+		if v, ok := tc.Load("nope"); ok {
+			t.Logf("Key %q shouldn't exist", "nope")
+			t.Fail()
+		} else if v != nil {
+			t.Logf("v should be empty with undefined key, saw %v", v)
+			t.Fail()
+		}
+	})
+
+	t.Run("load-overwrite", func(t *testing.T) {
+		tc := sclg.NewTimedCache(nil)
+		k, v1 := kvp()
+		v2 := v1 + 1
+		tc.Store(context.Background(), k, v1)
+		tc.Store(context.Background(), k, v2)
+		if v, ok := tc.Load(k); !ok {
+			t.Logf("Key %q was not found after subsequent store call", k)
+			t.Fail()
+		} else if v.(int) != v2 {
+			t.Logf("Key %q was not set to updated value %d: %v", k, v2, v)
+			t.Fail()
 		}
 	})
 }
