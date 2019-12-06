@@ -68,16 +68,22 @@ func TestTimedCache(t *testing.T) {
 	t.Run("store-remove-event-callback", func(t *testing.T) {
 		cfg := sclg.DefaultTimedCacheConfig()
 		var (
-			called  = false
+			called  = make(chan struct{}, 1)
 			ev      sclg.TimedCacheEvent
 			key     string
 			message string
 		)
+		defer func() {
+			close(called)
+			if len(called) > 0 {
+				<-called
+			}
+		}()
 		f := func(_ev sclg.TimedCacheEvent, _key, _message string) {
-			called = true
 			ev = _ev
 			key = _key
 			message = _message
+			called <- struct{}{}
 		}
 
 		cfg.StoredEventCallback = f
@@ -86,30 +92,35 @@ func TestTimedCache(t *testing.T) {
 		tc := sclg.NewTimedCache(cfg)
 		k, v := kvp()
 		tc.Store(context.Background(), k, v)
-		if !called {
+		select {
+		case <-called:
+		default:
 			t.Logf("store function was not called")
-			t.Fail()
-		}
-		if key != k {
-			t.Logf("key %s was not expected value of %s", key, k)
 			t.Fail()
 		}
 		if ev != sclg.TimedCacheEventStored {
 			t.Logf("unexpected ev: %s", ev)
 			t.Fail()
+		} else {
+			t.Logf("message was %s", message)
 		}
-		t.Logf("message was %s", message)
+		if key != k {
+			t.Logf("key %s was not expected value of %s", key, k)
+			t.Fail()
+		}
 		// now remove
-		called = false
 		tc.Remove(k)
-		if !called {
+		select {
+		case <-called:
+		default:
 			t.Logf("remove callback was not called")
 			t.Fail()
 		}
 		if ev != sclg.TimedCacheEventRemoved {
 			t.Logf("espected removed event, got %s", ev)
 			t.Fail()
+		} else {
+			t.Logf("message was %s", message)
 		}
-		t.Logf("message was %s", message)
 	})
 }
