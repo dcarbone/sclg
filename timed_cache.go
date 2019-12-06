@@ -199,7 +199,28 @@ func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 	}
 }
 
-func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{}) {
+func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
+	if tci, ok := tc.items[key]; ok {
+		if err := tci.ctx.Err(); err == nil {
+			return tci, ok
+		}
+	}
+	return nil, false
+}
+
+func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{}, force bool) (*TimedCacheItem, bool) {
+	// test if there is an existing entry
+	if curr, ok := tc.doLoad(key); ok {
+		// if this is not a forced overwrite, call equality comparison func to see if a replace needs to be done.
+		if !force && tc.cmp(key, curr.data, data) {
+			tc.log("Incoming cache request for %q does not differ, using existing cached item", key)
+			// return current item and false as we are returning existing data
+			return curr, false
+		}
+		tc.log("Incoming cache request for %q differs, expiring existing entry", key)
+		curr.cancel()
+	}
+
 	// fetch item from pool and populate
 	tci := timedCacheItemPool.Get().(*TimedCacheItem)
 	tci.id = atomic.AddUint64(&timedCacheItemID, 1)
@@ -232,21 +253,14 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{})
 	if tc.sl != nil {
 		tc.sl(TimedCacheEventStored, key, msg)
 	}
-}
 
-func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
-	if tci, ok := tc.items[key]; ok {
-		if err := tci.ctx.Err(); err == nil {
-			return tci, ok
-		}
-	}
-	return nil, false
+	return tci, true
 }
 
 // Store will immediately place the provided key into the cache, overwriting any existing entries
 func (tc *TimedCache) Store(ctx context.Context, key string, data interface{}) {
 	tc.mu.Lock()
-	tc.doStore(ctx, key, data)
+	tc.doStore(ctx, key, data, true)
 	tc.mu.Unlock()
 }
 
@@ -269,30 +283,21 @@ func (tc *TimedCache) Load(key string) (interface{}, bool) {
 // the provided equivalency comparison func to determine if a new cache item should be created, or if the existing
 // item is sufficient.
 func (tc *TimedCache) LoadOrStore(ctx context.Context, key string, data interface{}) (interface{}, bool) {
-	// lock immediately
+	var (
+		tci *TimedCacheItem
+		act interface{}
+		ok  bool
+	)
 	tc.mu.Lock()
-
-	// test if there is an existing entry that needs to be overwritten
-	if curr, ok := tc.doLoad(key); ok {
-		if tc.cmp(key, curr.data, data) {
-			tc.log("Incoming cache request for %q does not differ, using existing cached item", key)
-			v := curr.data
-			tc.mu.Unlock()
-			// return false as we are returning existing data
-			return v, false
-		}
-		tc.log("Incoming cache request for %q differs, expiring existing entry", key)
-		curr.cancel()
+	// call doStore without force, indicating we may need to return a value other than the one provided
+	if tci, ok = tc.doStore(ctx, key, data, false); ok {
+		act = data
+	} else {
+		act = tci.data
 	}
-
-	// store data
-	tc.doStore(ctx, key, data)
-
-	// unlock
 	tc.mu.Unlock()
+	return act, ok
 
-	// return true as we used the new incoming data
-	return data, true
 }
 
 // Len must return a count of the number of items currently in the cache
