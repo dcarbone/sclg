@@ -129,6 +129,7 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("concurrent-read-write", func(t *testing.T) {
+		// TODO: this seems...simplistic.
 		rand.Seed(time.Now().UnixNano())
 		var (
 			zero, one, two uint64
