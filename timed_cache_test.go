@@ -73,6 +73,12 @@ func TestTimedCache(t *testing.T) {
 			key     string
 			message string
 		)
+		defer func() {
+			close(called)
+			if len(called) > 0 {
+				<-called
+			}
+		}()
 		f := func(_ev sclg.TimedCacheEvent, _key, _message string) {
 			ev = _ev
 			key = _key
