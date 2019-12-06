@@ -135,6 +135,12 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 	if inc.Comparator != nil {
 		act.Comparator = inc.Comparator
 	}
+	if inc.StoredEventCallback != nil {
+		act.StoredEventCallback = inc.StoredEventCallback
+	}
+	if inc.RemovedEventCallback != nil {
+		act.RemovedEventCallback = inc.RemovedEventCallback
+	}
 	return act
 }
 
