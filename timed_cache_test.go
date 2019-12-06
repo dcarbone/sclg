@@ -132,7 +132,6 @@ func TestTimedCache(t *testing.T) {
 		// TODO: this seems...simplistic.
 		rand.Seed(time.Now().UnixNano())
 		var (
-			zero, one, two uint64
 			storeCnt       uint64
 			hitCnt         uint64
 			missCnt        uint64
@@ -167,7 +166,6 @@ func TestTimedCache(t *testing.T) {
 					switch rand.Intn(3) {
 					case 0:
 						tc.Store(context.Background(), k, v)
-						atomic.AddUint64(&zero, 1)
 						atomic.AddUint64(&storeCnt, 1)
 					case 1:
 						if _, ok = tc.Load(k); !ok {
@@ -175,14 +173,12 @@ func TestTimedCache(t *testing.T) {
 						} else {
 							atomic.AddUint64(&hitCnt, 1)
 						}
-						atomic.AddUint64(&one, 1)
 					case 2:
 						if _, stored = tc.LoadOrStore(context.Background(), k, v); stored {
 							atomic.AddUint64(&overwrittenCnt, 1)
 						} else {
 							atomic.AddUint64(&reusedCnt, 1)
 						}
-						atomic.AddUint64(&two, 1)
 					}
 				}
 				wg.Done()
@@ -191,7 +187,14 @@ func TestTimedCache(t *testing.T) {
 
 		wg.Wait()
 
-		t.Logf("zero: %d; one: %d; two: %d", zero, one, two)
-		t.Logf("stored: %d; hits: %d; misses: %d; overwritten: %d; reused %d", storeCnt, hitCnt, missCnt, overwrittenCnt, reusedCnt)
+		t.Logf("cache - items: %d", tc.Len())
+		t.Logf(
+			"calls - store: %d; load: %d (hit %f%%); loadOrStore: %d (overwritten %f%%)",
+			storeCnt,
+			hitCnt+missCnt,
+			float32(hitCnt)/float32(hitCnt+missCnt),
+			overwrittenCnt+reusedCnt,
+			float32(overwrittenCnt)/float32(overwrittenCnt+reusedCnt),
+		)
 	})
 }
