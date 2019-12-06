@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/dcarbone/sclg"
 )
@@ -22,9 +23,13 @@ func kvp() (string, int) {
 	return strconv.Itoa(v), v
 }
 
+func newTC(t *testing.T, cfg *sclg.TimedCacheConfig) *sclg.TimedCache {
+	return sclg.NewTimedCache(cfg, func(c *sclg.TimedCacheConfig) { c.Log = &testLogger{t} })
+}
+
 func TestTimedCache(t *testing.T) {
 	t.Run("store-load", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newTC(t, nil)
 		k, v := kvp()
 		tc.Store(context.Background(), k, v)
 		if lv, ok := tc.Load(k); !ok {
@@ -40,7 +45,7 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-empty", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newTC(t, nil)
 		if v, ok := tc.Load("nope"); ok {
 			t.Logf("Key %q shouldn't exist", "nope")
 			t.Fail()
@@ -51,7 +56,7 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-overwrite", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newTC(t, nil)
 		k, v1 := kvp()
 		v2 := v1 + 1
 		tc.Store(context.Background(), k, v1)
@@ -89,38 +94,38 @@ func TestTimedCache(t *testing.T) {
 		cfg.StoredEventCallback = f
 		cfg.RemovedEventCallback = f
 
-		tc := sclg.NewTimedCache(cfg)
+		tc := newTC(t, cfg)
 		k, v := kvp()
 		tc.Store(context.Background(), k, v)
 		select {
 		case <-called:
-		default:
+			if ev != sclg.TimedCacheEventStored {
+				t.Logf("unexpected ev: %s", ev)
+				t.Fail()
+			} else {
+				t.Logf("message was %s", message)
+			}
+			if key != k {
+				t.Logf("key %s was not expected value of %s", key, k)
+				t.Fail()
+			}
+		case <-time.After(time.Second):
 			t.Logf("store function was not called")
-			t.Fail()
-		}
-		if ev != sclg.TimedCacheEventStored {
-			t.Logf("unexpected ev: %s", ev)
-			t.Fail()
-		} else {
-			t.Logf("message was %s", message)
-		}
-		if key != k {
-			t.Logf("key %s was not expected value of %s", key, k)
-			t.Fail()
+			t.FailNow()
 		}
 		// now remove
 		tc.Remove(k)
 		select {
 		case <-called:
-		default:
+			if ev != sclg.TimedCacheEventRemoved {
+				t.Logf("espected removed event, got %s", ev)
+				t.Fail()
+			} else {
+				t.Logf("message was %s", message)
+			}
+		case <-time.After(time.Second):
 			t.Logf("remove callback was not called")
-			t.Fail()
-		}
-		if ev != sclg.TimedCacheEventRemoved {
-			t.Logf("espected removed event, got %s", ev)
-			t.Fail()
-		} else {
-			t.Logf("message was %s", message)
+			t.FailNow()
 		}
 	})
 }
