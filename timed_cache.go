@@ -208,6 +208,9 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{})
 	tci.defunct = make(chan struct{})
 	tci.ctx, tci.cancel = context.WithCancel(ctx)
 
+	if item, ok := tc.items[key]; ok {
+		item.cancel()
+	}
 	// add / replace entry
 	tc.items[key] = tci
 
