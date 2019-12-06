@@ -227,8 +227,12 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{})
 }
 
 func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
-	tci, ok := tc.items[key]
-	return tci, ok
+	if tci, ok := tc.items[key]; ok {
+		if err := tci.ctx.Err(); err == nil {
+			return tci, ok
+		}
+	}
+	return nil, false
 }
 
 // Store will immediately place the provided key into the cache, overwriting any existing entries
