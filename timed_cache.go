@@ -8,6 +8,27 @@ import (
 	"time"
 )
 
+// TimedCacheItem represents one entry in a timed cache
+type TimedCacheItem struct {
+	id      uint64
+	key     string
+	data    interface{}
+	defunct chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+var (
+	// this id will be incremented each time a new cache item is stored in any existing cache
+	timedCacheItemID uint64
+	// this pool is shared across all caches
+	timedCacheItemPool sync.Pool
+)
+
+func init() {
+	timedCacheItemPool = sync.Pool{New: func() interface{} { return new(TimedCacheItem) }}
+}
+
 type TimedCacheEvent int
 
 const (
@@ -27,16 +48,6 @@ func (ev TimedCacheEvent) String() string {
 	}
 }
 
-// TimedCacheItem represents one entry in a timed cache
-type TimedCacheItem struct {
-	id      uint64
-	key     string
-	data    interface{}
-	defunct chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
-}
-
 // TimedCacheItemEquivalencyFunc is used when a new cache request is seen where there is already key for that item defined. If
 // your implementation returns true, it is assumed the two items are equivalent and therefore no update is necessary
 type TimedCacheItemEquivalencyFunc func(key string, current, new interface{}) bool
@@ -47,17 +58,6 @@ type TimedCacheEventCallback func(ev TimedCacheEvent, key, message string)
 // defaultTimedCacheEquivalencyFunc will always allow the incoming item to overwrite the existing one.
 func defaultTimedCacheEquivalencyFunc(_ string, _, _ interface{}) bool {
 	return false
-}
-
-var (
-	// this id will be incremented each time a new cache item is stored in any existing cache
-	timedCacheItemID uint64
-	// this pool is shared across all caches
-	timedCacheItemPool sync.Pool
-)
-
-func init() {
-	timedCacheItemPool = sync.Pool{New: func() interface{} { return new(TimedCacheItem) }}
 }
 
 // TimedCacheConfig is used to define a given TimedCache instance
