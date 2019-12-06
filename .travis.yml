@@ -11,4 +11,4 @@ before_script:
   - go vet ./
 
 script:
-  - go test -race
+  - go test -race -v
