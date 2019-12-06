@@ -170,19 +170,19 @@ func TestTimedCache(t *testing.T) {
 						atomic.AddUint64(&zero, 1)
 						atomic.AddUint64(&storeCnt, 1)
 					case 1:
-						atomic.AddUint64(&one, 1)
 						if _, ok = tc.Load(k); !ok {
 							atomic.AddUint64(&missCnt, 1)
 						} else {
 							atomic.AddUint64(&hitCnt, 1)
 						}
+						atomic.AddUint64(&one, 1)
 					case 2:
-						atomic.AddUint64(&two, 1)
 						if _, stored = tc.LoadOrStore(context.Background(), k, v); stored {
 							atomic.AddUint64(&overwrittenCnt, 1)
 						} else {
 							atomic.AddUint64(&reusedCnt, 1)
 						}
+						atomic.AddUint64(&two, 1)
 					}
 				}
 				wg.Done()
