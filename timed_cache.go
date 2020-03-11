@@ -3,15 +3,19 @@ package sclg
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+type RangeFunc func(key, value interface{}) (proceed bool)
+
 // TimedCacheItem represents one entry in a timed cache
 type TimedCacheItem struct {
 	id      uint64
-	key     string
+	key     interface{}
 	data    interface{}
 	defunct chan struct{}
 	ctx     context.Context
@@ -55,13 +59,13 @@ func (ev TimedCacheEvent) String() string {
 
 // TimedCacheItemEquivalencyFunc is used when a new cache request is seen where there is already key for that item defined. If
 // your implementation returns true, it is assumed the two items are equivalent and therefore no update is necessary
-type TimedCacheItemEquivalencyFunc func(key string, current, new interface{}) bool
+type TimedCacheItemEquivalencyFunc func(key, current, new interface{}) bool
 
 // TimedCacheEventCallback is called any time a significant event happens to a particular item in the cache
-type TimedCacheEventCallback func(ev TimedCacheEvent, key, message string)
+type TimedCacheEventCallback func(ev TimedCacheEvent, key interface{}, message string)
 
 // defaultTimedCacheEquivalencyFunc will always allow the incoming item to overwrite the existing one.
-func defaultTimedCacheEquivalencyFunc(_ string, _, _ interface{}) bool {
+func defaultTimedCacheEquivalencyFunc(_, _, _ interface{}) bool {
 	return false
 }
 
@@ -70,7 +74,7 @@ type TimedCacheConfig struct {
 	// Log [optional]
 	//
 	// Optionally specify a logger to get debug-level logging
-	Log interface{ Printf(string, ...interface{}) }
+	Log *log.Logger
 
 	// Comparator [optional]
 	//
@@ -103,10 +107,10 @@ type TimedCacheConfigMutator func(*TimedCacheConfig)
 // TimedCache represents a specific-purpose cache
 type TimedCache struct {
 	mu    sync.RWMutex
-	l     interface{ Printf(string, ...interface{}) }
+	log   *log.Logger
 	wg    *sync.WaitGroup
 	cmp   TimedCacheItemEquivalencyFunc
-	items map[string]*TimedCacheItem
+	items map[interface{}]*TimedCacheItem
 
 	sl TimedCacheEventCallback
 	rl TimedCacheEventCallback
@@ -117,10 +121,10 @@ func NewTimedCache(conf *TimedCacheConfig, mutators ...TimedCacheConfigMutator) 
 	tc := new(TimedCache)
 
 	c := processConfig(conf, mutators...)
-	tc.l = c.Log
+	tc.log = c.Log
 	tc.wg = new(sync.WaitGroup)
 	tc.cmp = c.Comparator
-	tc.items = make(map[string]*TimedCacheItem)
+	tc.items = make(map[interface{}]*TimedCacheItem)
 
 	tc.sl = c.StoredEventCallback
 	tc.rl = c.RemovedEventCallback
@@ -136,7 +140,11 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 	for _, fn := range mutators {
 		fn(inc)
 	}
-	act.Log = inc.Log
+	if inc.Log != nil {
+		act.Log = inc.Log
+	} else {
+		act.Log = log.New(ioutil.Discard, "", 0)
+	}
 	if inc.Comparator != nil {
 		act.Comparator = inc.Comparator
 	}
@@ -149,43 +157,38 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 	return act
 }
 
-func (tc *TimedCache) log(f string, v ...interface{}) {
-	if tc.l != nil {
-		tc.l.Printf(f, v...)
-	}
-}
-
 func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 	// wait for context to expire
 	<-tci.ctx.Done()
 
 	// build message for log and event listener
 	key := tci.key
-	msg := fmt.Sprintf("Context for item %q (%d) has expired with reason: %s", tci.key, tci.id, tci.ctx.Err())
+	msg := fmt.Sprintf("Context for item %v (%d) has expired with reason: %s", tci.key, tci.id, tci.ctx.Err())
 
 	// tell the world
-	tc.log(msg)
+	tc.log.Printf(msg)
 
 	// lock cache and determine if the item needs to be deleted or if it has already been superseded
 	tc.mu.Lock()
 	if curr, ok := tc.items[tci.key]; ok {
 		if curr.id == tci.id {
-			tc.log("Deleting item %q (%d) from cache", tci.key, tci.id)
+			tc.log.Printf("Deleting item %v (%d) from cache", tci.key, tci.id)
 			delete(tc.items, tci.key)
 		} else {
-			tc.log("Item %q (%d) has been superseded by %d", tci.key, tci.id, curr.id)
+			tc.log.Printf("Item %v (%d) has been superseded by %d", tci.key, tci.id, curr.id)
 		}
 	}
-	tc.mu.Unlock()
 
 	// close internal signal chan
 	close(tci.defunct)
+
+	tc.mu.Unlock()
 
 	// decrement cache wg
 	tc.wg.Done()
 
 	// inform the masses
-	tc.log("Cache item %d is being recycled", tci.id)
+	tc.log.Printf("Cache item %d is being recycled", tci.id)
 
 	// zero out
 	tci.id = 0
@@ -204,7 +207,7 @@ func (tc *TimedCache) expireHandler(tci *TimedCacheItem) {
 	}
 }
 
-func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
+func (tc *TimedCache) doLoad(key interface{}) (*TimedCacheItem, bool) {
 	if tci, ok := tc.items[key]; ok {
 		if err := tci.ctx.Err(); err == nil {
 			return tci, ok
@@ -213,16 +216,16 @@ func (tc *TimedCache) doLoad(key string) (*TimedCacheItem, bool) {
 	return nil, false
 }
 
-func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{}, force bool) (*TimedCacheItem, bool) {
+func (tc *TimedCache) doStore(ctx context.Context, key, data interface{}, force bool) (*TimedCacheItem, bool) {
 	// test if there is an existing entry
 	if curr, ok := tc.doLoad(key); ok {
 		// if this is not a forced overwrite, call equality comparison func to see if a replace needs to be done.
 		if !force && tc.cmp(key, curr.data, data) {
-			tc.log("Incoming cache request for %q does not differ, using existing cached item", key)
+			tc.log.Printf("Incoming cache request for %q does not differ, using existing cached item", key)
 			// return current item and false as we are returning existing data
 			return curr, false
 		}
-		tc.log("Incoming cache request for %q differs, expiring existing entry", key)
+		tc.log.Printf("Incoming cache request for %q differs, expiring existing entry", key)
 		curr.cancel()
 	}
 
@@ -252,7 +255,7 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{},
 	go tc.expireHandler(tci)
 
 	// tell the world
-	tc.log(msg)
+	tc.log.Printf(msg)
 
 	// call listener, if defined
 	if tc.sl != nil {
@@ -262,15 +265,21 @@ func (tc *TimedCache) doStore(ctx context.Context, key string, data interface{},
 	return tci, true
 }
 
-// Store will immediately place the provided key into the cache, overwriting any existing entries
-func (tc *TimedCache) Store(ctx context.Context, key string, data interface{}) {
+// StoreCtx will immediately place the provided key into the cache until the provided context's deadline is reached,
+// overwriting any existing entries
+func (tc *TimedCache) StoreCtx(ctx context.Context, key, data interface{}) {
 	tc.mu.Lock()
 	tc.doStore(ctx, key, data, true)
 	tc.mu.Unlock()
 }
 
+// Store will immediately place the provided key into the cache with an infinite ttl
+func (tc *TimedCache) Store(key, data interface{}) {
+	tc.StoreCtx(context.Background(), key, data)
+}
+
 // Load will attempt to retrieve the associated data for the provided key, if found
-func (tc *TimedCache) Load(key string) (interface{}, bool) {
+func (tc *TimedCache) Load(key interface{}) (interface{}, bool) {
 	var (
 		tci  *TimedCacheItem
 		data interface{}
@@ -284,10 +293,10 @@ func (tc *TimedCache) Load(key string) (interface{}, bool) {
 	return data, ok
 }
 
-// LoadOrStore must attempt to store the provided data at the provided key.  If the key already exists, it will call
+// LoadOrStoreCtx attempts to store the provided data at the provided key.  If the key already exists, it will call
 // the provided equivalency comparison func to determine if a new cache item should be created, or if the existing
 // item is sufficient.
-func (tc *TimedCache) LoadOrStore(ctx context.Context, key string, data interface{}) (interface{}, bool) {
+func (tc *TimedCache) LoadOrStoreCtx(ctx context.Context, key, data interface{}) (interface{}, bool) {
 	var (
 		tci *TimedCacheItem
 		act interface{}
@@ -305,6 +314,11 @@ func (tc *TimedCache) LoadOrStore(ctx context.Context, key string, data interfac
 
 }
 
+// LoadOrStore executes a LoadOrStoreCtx call with an infinite context ttl
+func (tc *TimedCache) LoadOrStore(key, data interface{}) (interface{}, bool) {
+	return tc.LoadOrStoreCtx(context.Background(), key, data)
+}
+
 // Len must return a count of the number of items currently in the cache
 func (tc *TimedCache) Len() int {
 	tc.mu.RLock()
@@ -314,9 +328,9 @@ func (tc *TimedCache) Len() int {
 }
 
 // List must return a map of the keys and their current expiration currently being stored in this cache
-func (tc *TimedCache) List() map[string]time.Time {
+func (tc *TimedCache) List() map[interface{}]time.Time {
 	tc.mu.RLock()
-	items := make(map[string]time.Time, len(tc.items))
+	items := make(map[interface{}]time.Time, len(tc.items))
 	for k, tci := range tc.items {
 		items[k], _ = tci.ctx.Deadline()
 	}
@@ -326,7 +340,7 @@ func (tc *TimedCache) List() map[string]time.Time {
 
 // Remove must attempt to remove a given key from the cache.  It must block until the item has been removed, and it must
 // return false if no item with that key was found
-func (tc *TimedCache) Remove(key string) bool {
+func (tc *TimedCache) Remove(key interface{}) bool {
 	var (
 		tci *TimedCacheItem
 		ok  bool
@@ -341,6 +355,11 @@ func (tc *TimedCache) Remove(key string) bool {
 		tc.mu.RUnlock()
 	}
 	return ok
+}
+
+// Delete retains API compatibility with sync.Map
+func (tc *TimedCache) Delete(key interface{}) {
+	tc.Remove(key)
 }
 
 // Flush must immediately invalidate all items in the cache, returning a count of the number of items flushed

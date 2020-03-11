@@ -1,7 +1,6 @@
 package sclg_test
 
 import (
-	"context"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -9,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dcarbone/sclg"
+	"github.com/dcarbone/sclg/v2"
 )
 
 const (
@@ -27,7 +26,7 @@ func TestTimedCache(t *testing.T) {
 		tc := sclg.NewTimedCache(nil)
 		defer tc.Flush()
 		k, v := kvp(defaultMax)
-		tc.Store(context.Background(), k, v)
+		tc.Store(k, v)
 		if lv, ok := tc.Load(k); !ok {
 			t.Logf("Key %q expected to be %d, saw %v", k, v, lv)
 			t.Fail()
@@ -57,8 +56,8 @@ func TestTimedCache(t *testing.T) {
 		defer tc.Flush()
 		k, v1 := kvp(defaultMax)
 		v2 := v1 + 1
-		tc.Store(context.Background(), k, v1)
-		tc.Store(context.Background(), k, v2)
+		tc.Store(k, v1)
+		tc.Store(k, v2)
 		if v, ok := tc.Load(k); !ok {
 			t.Logf("Key %q was not found after subsequent store call", k)
 			t.Fail()
@@ -73,7 +72,7 @@ func TestTimedCache(t *testing.T) {
 		var (
 			called  = make(chan struct{}, 1)
 			ev      sclg.TimedCacheEvent
-			key     string
+			key     interface{}
 			message string
 		)
 		defer func() {
@@ -82,7 +81,7 @@ func TestTimedCache(t *testing.T) {
 				<-called
 			}
 		}()
-		f := func(_ev sclg.TimedCacheEvent, _key, _message string) {
+		f := func(_ev sclg.TimedCacheEvent, _key interface{}, _message string) {
 			ev = _ev
 			key = _key
 			message = _message
@@ -94,7 +93,7 @@ func TestTimedCache(t *testing.T) {
 
 		tc := sclg.NewTimedCache(cfg)
 		k, v := kvp(defaultMax)
-		tc.Store(context.Background(), k, v)
+		tc.Store(k, v)
 		defer tc.Flush()
 		select {
 		case <-called:
@@ -145,7 +144,7 @@ func TestTimedCache(t *testing.T) {
 
 		// new empty cache
 		tc := sclg.NewTimedCache(nil, func(c *sclg.TimedCacheConfig) {
-			c.Comparator = func(_ string, current, new interface{}) bool {
+			c.Comparator = func(_, current, new interface{}) bool {
 				return rand.Intn(2)%2 == 0
 			}
 		})
@@ -156,7 +155,7 @@ func TestTimedCache(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				var (
-					k      string
+					k      interface{}
 					v      int
 					ok     bool
 					stored bool
@@ -165,7 +164,7 @@ func TestTimedCache(t *testing.T) {
 					k, v = kvp(defaultMax)
 					switch rand.Intn(3) {
 					case 0:
-						tc.Store(context.Background(), k, v)
+						tc.Store(k, v)
 						atomic.AddUint64(&storeCnt, 1)
 					case 1:
 						if _, ok = tc.Load(k); !ok {
@@ -174,7 +173,7 @@ func TestTimedCache(t *testing.T) {
 							atomic.AddUint64(&hitCnt, 1)
 						}
 					case 2:
-						if _, stored = tc.LoadOrStore(context.Background(), k, v); stored {
+						if _, stored = tc.LoadOrStore(k, v); stored {
 							atomic.AddUint64(&overwrittenCnt, 1)
 						} else {
 							atomic.AddUint64(&reusedCnt, 1)
