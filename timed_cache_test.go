@@ -1,7 +1,9 @@
 package sclg_test
 
 import (
+	"log"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -21,9 +23,16 @@ func kvp(max int) (string, int) {
 	return strconv.Itoa(v), v
 }
 
+func newBasicTimedCache(mu ...sclg.TimedCacheConfigMutator) *sclg.TimedCache {
+	mu = append(mu, func(config *sclg.TimedCacheConfig) {
+		config.Log = log.New(os.Stdout, "--> ", log.LstdFlags)
+	})
+	return sclg.NewTimedCache(nil, mu...)
+}
+
 func TestTimedCache(t *testing.T) {
 	t.Run("store-load", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newBasicTimedCache()
 		defer tc.Flush()
 		k, v := kvp(defaultMax)
 		tc.Store(k, v)
@@ -40,7 +49,7 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-empty", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newBasicTimedCache()
 		defer tc.Flush()
 		if v, ok := tc.Load("nope"); ok {
 			t.Logf("Key %q shouldn't exist", "nope")
@@ -52,7 +61,7 @@ func TestTimedCache(t *testing.T) {
 	})
 
 	t.Run("load-overwrite", func(t *testing.T) {
-		tc := sclg.NewTimedCache(nil)
+		tc := newBasicTimedCache()
 		defer tc.Flush()
 		k, v1 := kvp(defaultMax)
 		v2 := v1 + 1
@@ -69,6 +78,7 @@ func TestTimedCache(t *testing.T) {
 
 	t.Run("store-remove-event-callback", func(t *testing.T) {
 		cfg := sclg.DefaultTimedCacheConfig()
+		cfg.Log = log.New(os.Stdout, "--> ", log.LstdFlags)
 		var (
 			called  = make(chan struct{}, 1)
 			ev      sclg.TimedCacheEvent
@@ -101,7 +111,7 @@ func TestTimedCache(t *testing.T) {
 				t.Logf("unexpected ev: %s", ev)
 				t.Fail()
 			} else {
-				t.Logf("message was %s", message)
+				t.Logf("store - message was: %s", message)
 			}
 			if key != k {
 				t.Logf("key %s was not expected value of %s", key, k)
@@ -111,6 +121,9 @@ func TestTimedCache(t *testing.T) {
 			t.Logf("store function was not called")
 			t.FailNow()
 		}
+
+		t.Logf("Removing key %q...", k)
+
 		// now remove
 		tc.Remove(k)
 		select {
@@ -119,7 +132,7 @@ func TestTimedCache(t *testing.T) {
 				t.Logf("espected removed event, got %s", ev)
 				t.Fail()
 			} else {
-				t.Logf("message was %s", message)
+				t.Logf("remove - message was: %s", message)
 			}
 		case <-time.After(time.Second):
 			t.Logf("remove callback was not called")
@@ -191,9 +204,9 @@ func TestTimedCache(t *testing.T) {
 			"calls - store: %d; load: %d (hit %f%%); loadOrStore: %d (overwritten %f%%)",
 			storeCnt,
 			hitCnt+missCnt,
-			float32(hitCnt)/float32(hitCnt+missCnt),
+			(float32(hitCnt)/float32(hitCnt+missCnt))*100,
 			overwrittenCnt+reusedCnt,
-			float32(overwrittenCnt)/float32(overwrittenCnt+reusedCnt),
+			(float32(overwrittenCnt)/float32(overwrittenCnt+reusedCnt))*100,
 		)
 	})
 }
