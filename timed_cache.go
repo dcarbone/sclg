@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-type RangeFunc func(key, value interface{}) (proceed bool)
-
 // TimedCacheItem represents one entry in a timed cache
 type TimedCacheItem struct {
 	id      uint64
