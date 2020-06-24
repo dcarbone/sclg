@@ -64,6 +64,12 @@ func recycle(tci *timedCacheItem) {
 	timedCacheItemPool.Put(tci)
 }
 
+// PurgeFunc is used to selectively purge multiple items from the cache.
+//
+// - if "removeKey" is true, the key may be removed if it is still present by the time the call is made
+// - if "nextKey" is false, once the current key has been handled the call will end
+type PurgeFunc func(key interface{}, ttl time.Time) (removeKey bool, nextKey bool)
+
 // TimedCacheEvent
 //
 // These are events that represent significant events in the lifecycle of an item within this cache.  More will be
@@ -373,6 +379,31 @@ func (tc *TimedCache) List() map[interface{}]time.Time {
 	}
 	tc.mu.RUnlock()
 	return items
+}
+
+// Purge allows you to selectively remove multiple keys based on the result of the provided func.  The return value
+// will only count those keys _actually_ removed, not just requested.  It is entirely possible that by the time your
+// func returns for the key to have already expired by some other means.
+func (tc *TimedCache) Purge(fn PurgeFunc) int {
+	var (
+		r, c bool
+		cnt  int
+	)
+	if fn == nil {
+		return 0
+	}
+	for key, t := range tc.List() {
+		r, c = fn(key, t)
+		if r {
+			if tc.Remove(key) {
+				cnt++
+			}
+		}
+		if !c {
+			break
+		}
+	}
+	return cnt
 }
 
 // Remove must attempt to remove a given key from the cache.  It must block until the item has been removed, and it must
