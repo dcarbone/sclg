@@ -312,20 +312,20 @@ func (tc *TimedCache) doStore(deadline time.Time, key, data interface{}, force b
 }
 
 // StoreUntil will immediately place the provided key into the cache until the provided deadline is breached
-func (tc *TimedCache) StoreUntil(deadline time.Time, key, data interface{}) {
+func (tc *TimedCache) StoreUntil(key, data interface{}, deadline time.Time) {
 	tc.mu.Lock()
 	tc.doStore(deadline, key, data, true)
 	tc.mu.Unlock()
 }
 
 // StoreFor will immediately place the provided key into the cache for the specified duration
-func (tc *TimedCache) StoreFor(ttl time.Duration, key, data interface{}) {
-	tc.StoreUntil(time.Now().Add(ttl), key, data)
+func (tc *TimedCache) StoreFor(key, data interface{}, ttl time.Duration) {
+	tc.StoreUntil(key, data, time.Now().Add(ttl))
 }
 
 // Store will immediately place the provided key into the cache with an infinite ttl
 func (tc *TimedCache) Store(key, data interface{}) {
-	tc.StoreUntil(time.Time{}, key, data)
+	tc.StoreUntil(key, data, time.Time{})
 }
 
 // Load will attempt to retrieve the associated data for the provided key, if found
