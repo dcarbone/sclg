@@ -32,6 +32,7 @@ func (tci *timedCacheItem) expire() {
 	if !tci.expd {
 		tci.expd = true
 		close(tci.exp)
+		tci.exp = nil
 	}
 	tci.mu.Unlock()
 }
@@ -44,12 +45,22 @@ func (tci *timedCacheItem) expired() bool {
 }
 
 func (tci *timedCacheItem) wait() <-chan struct{} {
-	return tci.exp
+	var done chan struct{}
+	tci.mu.Lock()
+	if tci.exp == nil {
+		done = make(chan struct{})
+		close(done)
+	} else {
+		done = tci.exp
+	}
+	tci.mu.Unlock()
+	return done
 }
 
 func init() {
 	timedCacheItemPool = sync.Pool{
-		New: func() interface{} { return new(timedCacheItem) }}
+		New: func() interface{} { return new(timedCacheItem) },
+	}
 }
 
 func recycle(tci *timedCacheItem) {
@@ -153,7 +164,7 @@ type TimedCache struct {
 	rl TimedCacheEventCallback
 }
 
-// NewTimedCache will return to you a function cache instance
+// NewTimedCache will return to you a functional cache instance
 func NewTimedCache(conf *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *TimedCache {
 	tc := new(TimedCache)
 
