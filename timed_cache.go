@@ -70,6 +70,7 @@ func recycle(tci *timedCacheItem) {
 	tci.data = nil
 	tci.dl = time.Time{}
 	tci.exp = nil
+	tci.expd = false
 
 	// finally put back in the pool
 	timedCacheItemPool.Put(tci)
@@ -206,15 +207,15 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 }
 
 func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
-	// wait for context to expire
+	// if this item has a limited ttl
 	if !tci.dl.IsZero() {
 		go func() {
-			timer := time.NewTimer(tci.dl.Sub(time.Now()))
-			<-timer.C
+			<-time.After(tci.dl.Sub(time.Now()))
 			tci.expire()
 		}()
 	}
 
+	// wait for item to expire
 	<-tci.wait()
 
 	// build message for log and event listener
@@ -242,7 +243,7 @@ func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 	tc.wg.Done()
 
 	// inform the masses
-	tc.log.Printf("Cache item %d is being recycled", tci.id)
+	tc.log.Printf("Cache item %v (%d) is being recycled", tci.key, tci.id)
 
 	// send off to recycle bin
 	recycle(tci)
