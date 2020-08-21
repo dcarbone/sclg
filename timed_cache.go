@@ -265,18 +265,8 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 }
 
 func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
-	// if this item has a limited ttl
-	if !tci.dl.IsZero() {
-		select {
-		case <-tci.wait():
-		case <-time.After(tci.dl.Sub(time.Now())):
-			tci.expire()
-			<-tci.wait()
-		}
-	} else {
-		// wait for item to expire
-		<-tci.wait()
-	}
+	// wait for item to expire
+	<-tci.wait()
 
 	// build message for log and event listener
 	key := tci.key
