@@ -216,7 +216,6 @@ type TimedCacheConfigMutator func(*TimedCacheConfig)
 type TimedCache struct {
 	mu    sync.RWMutex
 	log   *log.Logger
-	wg    *sync.WaitGroup
 	cmp   TimedCacheItemEquivalencyFunc
 	items map[interface{}]*timedCacheItem
 
@@ -230,7 +229,6 @@ func NewTimedCache(conf *TimedCacheConfig, mutators ...TimedCacheConfigMutator) 
 
 	c := processConfig(conf, mutators...)
 	tc.log = c.Log
-	tc.wg = new(sync.WaitGroup)
 	tc.cmp = c.Comparator
 	tc.items = make(map[interface{}]*timedCacheItem)
 
@@ -290,9 +288,6 @@ func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 
 	tc.mu.Unlock()
 
-	// decrement cache wg
-	tc.wg.Done()
-
 	// inform the masses
 	tc.log.Printf("Cache item %v (%d) is being recycled", tci.key, tci.id)
 
@@ -331,9 +326,6 @@ func (tc *TimedCache) doStore(key, data interface{}, force bool, deadline time.T
 
 	// add / replace entry
 	tc.items[key] = tci
-
-	// increment wait group
-	tc.wg.Add(1)
 
 	// build msg for event
 	var msg string
@@ -491,17 +483,10 @@ func (tc *TimedCache) Delete(key interface{}) {
 
 // Flush must immediately invalidate all items in the cache, returning a count of the number of items flushed
 func (tc *TimedCache) Flush() int {
-	var (
-		tci *timedCacheItem
-		cnt int
-	)
-	tc.mu.RLock()
-	for _, tci = range tc.items {
+	var cnt int
+	for k := range tc.List() {
+		tc.Remove(k)
 		cnt++
-		tc.log.Printf("Expiring %v...", tci.key)
-		tci.expire()
 	}
-	tc.mu.RUnlock()
-	tc.wg.Wait()
 	return cnt
 }
