@@ -32,7 +32,6 @@ func (tci *timedCacheItem) expire() {
 	if !tci.expd {
 		tci.expd = true
 		close(tci.exp)
-		tci.exp = nil
 	}
 	tci.mu.Unlock()
 }
@@ -70,7 +69,6 @@ func recycle(tci *timedCacheItem) {
 	tci.data = nil
 	tci.dl = time.Time{}
 	tci.exp = nil
-	tci.expd = false
 
 	// finally put back in the pool
 	timedCacheItemPool.Put(tci)
@@ -210,8 +208,13 @@ func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 	// if this item has a limited ttl
 	if !tci.dl.IsZero() {
 		go func() {
-			<-time.After(tci.dl.Sub(time.Now()))
-			tci.expire()
+			select {
+			case <-tci.wait():
+				// merely exit
+			case <-time.After(tci.dl.Sub(time.Now())):
+				// forcibly close
+				tci.expire()
+			}
 		}()
 	}
 
