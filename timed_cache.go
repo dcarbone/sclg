@@ -23,8 +23,25 @@ type timedCacheItem struct {
 	key  interface{}
 	data interface{}
 	dl   time.Time
-	exp  chan struct{}
+	dlt  *time.Timer
 	expd bool
+	exp  chan struct{}
+	dead chan struct{}
+}
+
+func (tci *timedCacheItem) init(key, data interface{}, deadline time.Time) {
+	tci.mu.Lock()
+	tci.id = atomic.AddUint64(&timedCacheItemID, 1)
+	tci.key = key
+	tci.data = data
+	tci.expd = false
+	tci.exp = make(chan struct{})
+	tci.dead = make(chan struct{})
+	if !deadline.IsZero() {
+		tci.dl = deadline
+		tci.dlt = time.AfterFunc(time.Until(deadline), tci.expire)
+	}
+	tci.mu.Unlock()
 }
 
 func (tci *timedCacheItem) expire() {
@@ -32,6 +49,10 @@ func (tci *timedCacheItem) expire() {
 	if !tci.expd {
 		tci.expd = true
 		close(tci.exp)
+		if tci.dlt != nil {
+			tci.dlt.Stop()
+			tci.dlt = nil
+		}
 	}
 	tci.mu.Unlock()
 }
@@ -43,17 +64,60 @@ func (tci *timedCacheItem) expired() bool {
 	return e
 }
 
-func (tci *timedCacheItem) wait() <-chan struct{} {
-	var done chan struct{}
+func (tci *timedCacheItem) deadline() (time.Time, bool) {
+	var (
+		dl time.Time
+		ok bool
+	)
 	tci.mu.Lock()
-	if tci.exp == nil {
-		done = make(chan struct{})
-		close(done)
-	} else {
-		done = tci.exp
+	if !tci.dl.IsZero() {
+		dl = tci.dl
+		ok = true
 	}
 	tci.mu.Unlock()
-	return done
+	return dl, ok
+}
+
+func (tci *timedCacheItem) wait() <-chan struct{} {
+	var wait chan struct{}
+	tci.mu.Lock()
+	if tci.exp == nil {
+		wait = make(chan struct{})
+		defer close(wait)
+	} else {
+		wait = tci.exp
+	}
+	tci.mu.Unlock()
+	return wait
+}
+
+func (tci *timedCacheItem) done() <-chan struct{} {
+	var dead chan struct{}
+	tci.mu.Lock()
+	if tci.dead == nil {
+		dead = make(chan struct{})
+		defer close(dead)
+	} else {
+		dead = tci.dead
+	}
+	tci.mu.Unlock()
+	return dead
+}
+
+func (tci *timedCacheItem) cleanup() {
+	tci.mu.Lock()
+	tci.id = 0
+	tci.key = nil
+	tci.data = nil
+	tci.dl = time.Time{}
+	if tci.dlt != nil {
+		tci.dlt.Stop()
+	}
+	tci.dlt = nil
+	tci.exp = nil
+	close(tci.dead)
+	tci.dead = nil
+	tci.mu.Unlock()
 }
 
 func init() {
@@ -64,11 +128,7 @@ func init() {
 
 func recycle(tci *timedCacheItem) {
 	// zero out
-	tci.id = 0
-	tci.key = ""
-	tci.data = nil
-	tci.dl = time.Time{}
-	tci.exp = nil
+	tci.cleanup()
 
 	// finally put back in the pool
 	timedCacheItemPool.Put(tci)
@@ -204,28 +264,19 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 	return act
 }
 
-func (tc *TimedCache) deadlineHandler(tci *timedCacheItem) {
-	// store incoming id.  because item pointers are re-used, we must only close if the id remains the same
-	id := tci.id
-	select {
-	case <-tci.wait():
-		// merely exit
-	case <-time.After(tci.dl.Sub(time.Now())):
-		if tci.id == id {
-			// forcibly close
-			tci.expire()
-		}
-	}
-}
-
 func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 	// if this item has a limited ttl
 	if !tci.dl.IsZero() {
-		go tc.deadlineHandler(tci)
+		select {
+		case <-tci.wait():
+		case <-time.After(tci.dl.Sub(time.Now())):
+			tci.expire()
+			<-tci.wait()
+		}
+	} else {
+		// wait for item to expire
+		<-tci.wait()
 	}
-
-	// wait for item to expire
-	<-tci.wait()
 
 	// build message for log and event listener
 	key := tci.key
@@ -255,7 +306,7 @@ func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 	tc.log.Printf("Cache item %v (%d) is being recycled", tci.key, tci.id)
 
 	// send off to recycle bin
-	recycle(tci)
+	go recycle(tci)
 
 	// call listener, if defined
 	if tc.rl != nil {
@@ -270,7 +321,7 @@ func (tc *TimedCache) doLoad(key interface{}) (*timedCacheItem, bool) {
 	return nil, false
 }
 
-func (tc *TimedCache) doStore(deadline time.Time, key, data interface{}, force bool) (*timedCacheItem, bool) {
+func (tc *TimedCache) doStore(key, data interface{}, force bool, deadline time.Time) (*timedCacheItem, bool) {
 	// test if there is an existing entry
 	if curr, ok := tc.doLoad(key); ok {
 		// if this is not a forced overwrite, call equality comparison func to see if a replace needs to be done.
@@ -285,12 +336,7 @@ func (tc *TimedCache) doStore(deadline time.Time, key, data interface{}, force b
 
 	// fetch item from pool and populate
 	tci := timedCacheItemPool.Get().(*timedCacheItem)
-	tci.key = key
-	tci.data = data
-	tci.dl = deadline
-	tci.id = atomic.AddUint64(&timedCacheItemID, 1)
-	tci.exp = make(chan struct{})
-	tci.expd = false
+	tci.init(key, data, deadline)
 
 	// add / replace entry
 	tc.items[key] = tci
@@ -323,7 +369,7 @@ func (tc *TimedCache) doStore(deadline time.Time, key, data interface{}, force b
 // StoreUntil will immediately place the provided key into the cache until the provided deadline is breached
 func (tc *TimedCache) StoreUntil(key, data interface{}, deadline time.Time) {
 	tc.mu.Lock()
-	tc.doStore(deadline, key, data, true)
+	tc.doStore(key, data, true, deadline)
 	tc.mu.Unlock()
 }
 
@@ -355,7 +401,7 @@ func (tc *TimedCache) Load(key interface{}) (interface{}, bool) {
 // LoadOrStoreUntil attempts to store the provided data at the provided key.  If the key already exists, it will call
 // the provided equivalency comparison func to determine if a new cache item should be created, or if the existing
 // item is sufficient.
-func (tc *TimedCache) LoadOrStoreUntil(deadline time.Time, key, data interface{}) (interface{}, bool) {
+func (tc *TimedCache) LoadOrStoreUntil(key, data interface{}, deadline time.Time) (interface{}, bool) {
 	var (
 		tci *timedCacheItem
 		act interface{}
@@ -363,7 +409,7 @@ func (tc *TimedCache) LoadOrStoreUntil(deadline time.Time, key, data interface{}
 	)
 	tc.mu.Lock()
 	// call doStore without force, indicating we may need to return a value other than the one provided
-	if tci, ok = tc.doStore(deadline, key, data, false); ok {
+	if tci, ok = tc.doStore(key, data, false, deadline); ok {
 		act = data
 	} else {
 		act = tci.data
@@ -374,13 +420,13 @@ func (tc *TimedCache) LoadOrStoreUntil(deadline time.Time, key, data interface{}
 }
 
 // LoadOrStoreFor executes a LoadOrStoreUntil call with a deadline of now + ttl
-func (tc *TimedCache) LoadOrStoreFor(ttl time.Duration, key, data interface{}) (interface{}, bool) {
-	return tc.LoadOrStoreUntil(time.Now().Add(ttl), key, data)
+func (tc *TimedCache) LoadOrStoreFor(key, data interface{}, ttl time.Duration) (interface{}, bool) {
+	return tc.LoadOrStoreUntil(key, data, time.Now().Add(ttl))
 }
 
 // LoadOrStore executes a LoadOrStoreUntil call with an infinite context ttl
 func (tc *TimedCache) LoadOrStore(key, data interface{}) (interface{}, bool) {
-	return tc.LoadOrStoreUntil(time.Time{}, key, data)
+	return tc.LoadOrStoreUntil(key, data, time.Time{})
 }
 
 // Len must return a count of the number of items currently in the cache
@@ -391,12 +437,13 @@ func (tc *TimedCache) Len() int {
 	return l
 }
 
-// List must return a map of the keys and their current expiration currently being stored in this cache
+// List must return a map of the currently stored keys with their deadline.  A zero-val deadline must indicate the key
+// will persist until explicitly removed.
 func (tc *TimedCache) List() map[interface{}]time.Time {
 	tc.mu.RLock()
 	items := make(map[interface{}]time.Time, len(tc.items))
 	for k, tci := range tc.items {
-		items[k] = tci.dl
+		items[k], _ = tci.deadline()
 	}
 	tc.mu.RUnlock()
 	return items
@@ -436,7 +483,7 @@ func (tc *TimedCache) Remove(key interface{}) bool {
 	)
 	tc.mu.RLock()
 	if tci, ok = tc.items[key]; ok {
-		done := tci.wait()
+		done := tci.done()
 		tci.expire()
 		tc.mu.RUnlock()
 		<-done
