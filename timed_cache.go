@@ -483,10 +483,9 @@ func (tc *TimedCache) Delete(key interface{}) {
 
 // Flush must immediately invalidate all items in the cache, returning a count of the number of items flushed
 func (tc *TimedCache) Flush() int {
-	var cnt int
-	for k := range tc.List() {
+	keys := tc.List()
+	for k := range keys {
 		tc.Remove(k)
-		cnt++
 	}
-	return cnt
+	return len(keys)
 }
