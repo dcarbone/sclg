@@ -204,18 +204,24 @@ func processConfig(inc *TimedCacheConfig, mutators ...TimedCacheConfigMutator) *
 	return act
 }
 
+func (tc *TimedCache) deadlineHandler(tci *timedCacheItem) {
+	// store incoming id.  because item pointers are re-used, we must only close if the id remains the same
+	id := tci.id
+	select {
+	case <-tci.wait():
+		// merely exit
+	case <-time.After(tci.dl.Sub(time.Now())):
+		if tci.id == id {
+			// forcibly close
+			tci.expire()
+		}
+	}
+}
+
 func (tc *TimedCache) expireHandler(tci *timedCacheItem) {
 	// if this item has a limited ttl
 	if !tci.dl.IsZero() {
-		go func() {
-			select {
-			case <-tci.wait():
-				// merely exit
-			case <-time.After(tci.dl.Sub(time.Now())):
-				// forcibly close
-				tci.expire()
-			}
-		}()
+		go tc.deadlineHandler(tci)
 	}
 
 	// wait for item to expire
