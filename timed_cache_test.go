@@ -276,39 +276,23 @@ func TestTimedCache_Expire(t *testing.T) {
 func TestTimedCache_Wait(t *testing.T) {
 	t.Parallel()
 
-	var (
-		added   uint64
-		removed uint64
-	)
-
-	tc := sclg.NewTimedCache(nil, func(c *sclg.TimedCacheConfig) {
-		c.StoredEventCallback = func(ev sclg.TimedCacheEvent, key interface{}, message string) {
-			atomic.AddUint64(&added, 1)
-		}
-		c.RemovedEventCallback = func(ev sclg.TimedCacheEvent, key interface{}, message string) {
-			atomic.AddUint64(&removed, 1)
-		}
-	})
-
+	tc := newBasicTimedCache()
 	defer tc.Flush()
 
 	for i := 0; i < 100; i++ {
 		tc.Store(fmt.Sprintf("key-%d", i), i)
 	}
 
-	if a := atomic.LoadUint64(&added); a != 100 {
-		t.Logf("Expected added to be 100, saw %d", a)
+	r := tc.Flush()
+
+	if r != 100 {
+		t.Logf("Expected 100 items to be removed, saw %d", r)
 		t.FailNow()
 		return
 	}
 
-	tc.Flush()
-
-	a := atomic.LoadUint64(&added)
-	r := atomic.LoadUint64(&removed)
-
-	if a != r {
-		t.Logf("Expected removed == added, saw: added=%d; removed=%d", a, r)
+	if l := tc.Len(); l != 0 {
+		t.Logf("Expected len to be 0, saw %d", l)
 		t.FailNow()
 		return
 	}

@@ -109,12 +109,13 @@ func (tci *timedCacheItem) cleanup() {
 	tci.id = 0
 	tci.key = nil
 	tci.data = nil
+	tci.expd = true
+	tci.exp = nil
 	tci.dl = time.Time{}
 	if tci.dlt != nil {
 		tci.dlt.Stop()
 	}
 	tci.dlt = nil
-	tci.exp = nil
 	close(tci.dead)
 	tci.dead = nil
 	tci.mu.Unlock()
