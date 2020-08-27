@@ -437,20 +437,18 @@ func (tc *TimedCache) List() map[interface{}]time.Time {
 // func returns for the key to have already expired by some other means.
 func (tc *TimedCache) Purge(fn PurgeFunc) int {
 	var (
-		r, c bool
-		cnt  int
+		rm, cont bool
+		cnt      int
 	)
 	if fn == nil {
 		return 0
 	}
 	for key, t := range tc.List() {
-		r, c = fn(key, t)
-		if r {
-			if tc.Remove(key) {
-				cnt++
-			}
+		rm, cont = fn(key, t)
+		if rm && tc.Remove(key) {
+			cnt++
 		}
-		if !c {
+		if !cont {
 			break
 		}
 	}
