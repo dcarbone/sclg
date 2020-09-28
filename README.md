@@ -5,4 +5,4 @@ Small experiment with timed caching implementation in golang
 
 ## Documentation
 Please refer to pkg.go.dev for the documentation.
-[pkg.go.dev](https://pkg.go.dev/github.com/dcarbone/sclg/v2)
+[pkg.go.dev](https://pkg.go.dev/github.com/dcarbone/sclg/v3)
